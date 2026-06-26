@@ -38,6 +38,202 @@ async function run() {
     const subscriptionCollection = db.collection('subscriptionData');
     console.log("🔒 Successfully connected to MongoDB Atlas!");
 
+// ========================================================
+    // 🏠 [ADMIN DASHBOARD ROUTE 1] - Overview Stats & Trends
+    // ========================================================
+    app.get("/api/admin/overview-stats", async (req, res) => {
+        try {
+            const totalUsers = await usersCollection.countDocuments();
+            const totalPublicLessons = await lessonsCollection.countDocuments({ visibility: "Public" });
+            const totalReportedLessons = await reportsCollection.countDocuments();
+            
+            // আজকের নতুন লেসন কাউন্ট
+            const todayStart = new Date();
+            todayStart.setHours(0,0,0,0);
+            const todaysLessons = await lessonsCollection.countDocuments({
+                createdAt: { $gte: todayStart.toISOString() }
+            });
+
+            // মোস্ট অ্যাক্টিভ কন্ট্রিবিউটর (Top 5)
+            const topContributors = await lessonsCollection.aggregate([
+                { $group: { _id: "$creatorEmail", lessonsCount: { $sum: 1 }, name: { $first: "$creatorName" }, image: { $first: "$creatorImage" } } },
+                { $sort: { lessonsCount: -1 } },
+                { $limit: 5 },
+                { $project: { email: "$_id", _id: 0, name: { $ifNull: ["$name", "$email"] }, image: 1, lessonsCount: 1 } }
+            ]).toArray();
+
+            // গ্রাফ ট্রেন্ড ডাটা (শেষ ১২টি লেসন এর সহজ গ্রাফিক্যাল রিপ্রেজেন্টেশন)
+            const recentSubmissions = await lessonsCollection.find({}, { projection: { _id: 1 } })
+                .sort({ createdAt: -1 }).limit(12).toArray();
+            const growthTrends = recentSubmissions.map((_, i) => ({ count: i + 1 }));
+
+            res.json({
+                stats: { totalUsers, totalPublicLessons, totalReportedLessons, todaysLessons },
+                topContributors,
+                growthTrends
+            });
+        } catch (error) {
+            res.status(500).json({ message: "Failed to load dashboard metrics" });
+        }
+    });
+
+    // ========================================================
+    // 👥 [ADMIN DASHBOARD ROUTE 2] - User Management
+    // ========================================================
+    app.get("/api/admin/users", async (req, res) => {
+        try {
+            const { search } = req.query;
+            let query = {};
+            if (search) {
+                query = {
+                    $or: [
+                        { name: { $regex: search, $options: 'i' } },
+                        { email: { $regex: search, $options: 'i' } }
+                    ]
+                };
+            }
+            const users = await usersCollection.find(query).toArray();
+            res.json({ users });
+        } catch (error) {
+            res.status(500).json({ message: "Failed to fetch users" });
+        }
+    });
+
+    // ইউজার প্রমোট রাউট (PATCH)
+    app.patch("/api/admin/users/:id/promote", async (req, res) => {
+        try {
+            const id = req.params.id;
+            const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+            const result = await usersCollection.updateOne(query, { $set: { role: 'admin' } });
+            res.json(result);
+        } catch (error) {
+            res.status(500).json({ message: "Promotion failed" });
+        }
+    });
+
+    // ইউজার ডিলিট রাউট (DELETE)
+    app.delete("/api/admin/users/:id", async (req, res) => {
+        try {
+            const id = req.params.id;
+            const query = ObjectId.isValid(id) ? { _id: new ObjectId(id) } : { _id: id };
+            const result = await usersCollection.deleteOne(query);
+            res.json(result);
+        } catch (error) {
+            res.status(500).json({ message: "Failed to delete user" });
+        }
+    });
+
+    // ========================================================
+    // 📖 [ADMIN DASHBOARD ROUTE 3] - Lesson Management
+    // ========================================================
+    app.get("/api/admin/lessons", async (req, res) => {
+        try {
+            const { category } = req.query;
+            let query = {};
+            if (category && category !== 'All') {
+                query.category = category;
+            }
+
+            const lessons = await lessonsCollection.find(query).sort({ createdAt: -1 }).toArray();
+            
+            // মডারেটর কাউন্ট কার্ডের ডাটা সমুহ
+            const publicCount = await lessonsCollection.countDocuments({ visibility: "Public" });
+            const privateCount = await lessonsCollection.countDocuments({ visibility: "Private" });
+            const flaggedCount = await reportsCollection.countDocuments();
+
+            res.json({
+                lessons,
+                counts: { public: publicCount, private: privateCount, flagged: flaggedCount }
+            });
+        } catch (error) {
+            res.status(500).json({ message: "Failed to fetch dashboard lessons" });
+        }
+    });
+
+    // লেসন ফিচারড টগল রাউট (PATCH)
+    app.patch("/api/admin/lessons/:id/feature", async (req, res) => {
+        try {
+            const id = req.params.id;
+            const { isFeatured } = req.body;
+            const result = await lessonsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { isFeatured: isFeatured } }
+            );
+            res.json(result);
+        } catch (error) {
+            res.status(500).json({ message: "Failed to update feature status" });
+        }
+    });
+
+    // কনটেন্ট রিভিউড মার্ক করার রাউট (PATCH)
+    app.patch("/api/admin/lessons/:id/review", async (req, res) => {
+        try {
+            const id = req.params.id;
+            const result = await lessonsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { isReviewed: true } }
+            );
+            res.json(result);
+        } catch (error) {
+            res.status(500).json({ message: "Failed to review content" });
+        }
+    });
+
+    // ========================================================
+    // 🚨 [ADMIN DASHBOARD ROUTE 4] - Reported System
+    // ========================================================
+    app.get("/api/admin/reports", async (req, res) => {
+        try {
+            // রিপোর্ট কালেকশন থেকে ইউনিক লেসন আইডি অনুযায়ী গ্রুপ করে রিপোর্টের ডিটেইলস নিয়ে আসা
+            const reportedLessons = await reportsCollection.aggregate([
+                {
+                    $group: {
+                        _id: "$lessonId",
+                        title: { $first: "$lessonTitle" },
+                        reports: { $push: { reporterEmail: "$reporterEmail", reason: "$reason" } }
+                    }
+                },
+                {
+                    $project: {
+                        _id: 1,
+                        title: { $ifNull: ["$title", "Untitled Reported Lesson"] },
+                        reports: 1
+                    }
+                }
+            ]).toArray();
+
+            res.json({ reportedLessons });
+        } catch (error) {
+            res.status(500).json({ message: "Failed to fetch flag logs" });
+        }
+    });
+
+    // রিপোর্ট ইগনোর/ক্লিয়ার করার রাউট (DELETE reports by lessonId)
+    app.delete("/api/admin/reports/:lessonId/ignore", async (req, res) => {
+        try {
+            const lessonId = req.params.lessonId;
+            const result = await reportsCollection.deleteMany({ lessonId: lessonId });
+            res.json(result);
+        } catch (error) {
+            res.status(500).json({ message: "Failed to clear reports" });
+        }
+    });
+
+    // ========================================================
+    // 👤 [ADMIN DASHBOARD ROUTE 5] - Profile Log Data
+    // ========================================================
+    app.get("/api/admin/profile-activity", async (req, res) => {
+        try {
+            const reviewedCount = await lessonsCollection.countDocuments({ isReviewed: true });
+            const flagsHandled = await lessonsCollection.countDocuments({ isFeatured: true }); // অথবা আপনার মডারেশন ট্র্যাক লজিক
+            res.json({
+                activitySummary: { reviewed: reviewedCount, flagsHandled }
+            });
+        } catch (error) {
+            res.status(500).json({ message: "Failed to fetch profile logs" });
+        }
+    });
+
    app.post("/api/lessons", async (req, res) => {
         try {
             const body = req.body;
@@ -57,12 +253,67 @@ async function run() {
     });
 
     // পাবলিক লেসন ব্রাউজ করার রুট (GET - Browse Public Lessons Page)
+   // পাবলিক লেসন ব্রাউজ করার রুট (GET - Browse Public Lessons Page with Search, Filter, Sort, Pagination)
     app.get("/api/public-lessons", async (req, res) => {
         try {
-            // শুধুমাত্র যেগুলো Public করা আছে সেগুলোই রিট্রিভ হবে
-            const query = { visibility: "Public" };
-            const result = await lessonsCollection.find(query).sort({ createdAt: -1 }).toArray();
-            res.json(result);
+            const { search, category, tone, sort, page = 1, limit = 6 } = req.query;
+            
+            // ১. বেস কোয়েরি (শুধুমাত্র Public লেসন)
+            let query = { visibility: "Public" };
+
+            // ২. সার্চ লজিক (Title অথবা Description এ কিওয়ার্ড খোঁজা)
+            if (search) {
+                query.$or = [
+                    { title: { $regex: search, $options: 'i' } },
+                    { description: { $regex: search, $options: 'i' } }
+                ];
+            }
+
+            // ৩. ক্যাটাগরি ফিল্টার
+            if (category && category !== 'All') {
+                query.category = category;
+            }
+
+            // ৪. ইমোশনাল টোন ফিল্টার
+            if (tone && tone !== 'All') {
+                query.emotionalTone = tone;
+            }
+
+            // ৫. সর্টিং অপশনস
+            let sortOptions = { createdAt: -1 }; // Default: Newest
+            if (sort === 'oldest') {
+                sortOptions = { createdAt: 1 };
+            } else if (sort === 'most-saved') {
+                sortOptions = { favoritesCount: -1 };
+            } else if (sort === 'most-liked') {
+                sortOptions = { likesCount: -1 };
+            }
+
+            // ৬. পেজিনেশন ক্যালকুলেশন
+            const pageNum = parseInt(page);
+            const limitNum = parseInt(limit);
+            const skip = (pageNum - 1) * limitNum;
+
+            // মোট কতগুলো ডকুমেন্ট ম্যাচ করেছে তা কাউন্ট করা
+            const totalLessons = await lessonsCollection.countDocuments(query);
+            const totalPages = Math.ceil(totalLessons / limitNum);
+
+            // ডাটা ফেচিং
+            const result = await lessonsCollection.find(query)
+                .sort(sortOptions)
+                .skip(skip)
+                .limit(limitNum)
+                .toArray();
+
+            res.json({
+                lessons: result,
+                pagination: {
+                    totalLessons,
+                    totalPages,
+                    currentPage: pageNum,
+                    limit: limitNum
+                }
+            });
         } catch (error) {
             console.error("Get Public Lessons Error:", error);
             res.status(500).json({ success: false, message: "Failed to fetch public lessons" });
@@ -141,6 +392,7 @@ async function run() {
             res.status(500).json({ message: "Reporting failed" });
         }
     });
+   
 
 
   
