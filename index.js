@@ -11,7 +11,7 @@ const uri = process.env.MONGODB_URI;
 
 // --- ১. গ্লোবাল মিডলওয়্যার কনফিগারেশন (সবার উপরে ফিক্সড) ---
 app.use(cors({
-    origin: 'http://localhost:3000', // আপনার ফ্রন্টএন্ড ইউআরএল
+    origin:process.env.CLIENT_URL, // আপনার ফ্রন্টএন্ড ইউআরএল
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     credentials: true
 }));
