@@ -1,3 +1,6 @@
+const dns = require("node:dns");
+dns.setServers(["1.1.1.1", "1.0.0.1"]);
+
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
@@ -12,7 +15,7 @@ const uri = process.env.MONGODB_URI;
 // --- ১. গ্লোবাল মিডলওয়্যার কনফিগারেশন (সবার উপরে ফিক্সড) ---
 app.use(cors({
     origin:process.env.CLIENT_URL, // আপনার ফ্রন্টএন্ড ইউআরএল
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    
     credentials: true
 }));
 app.use(express.json()); // 🟢 এটাকে গ্লোবালি এখানে নিয়ে আসা হলো যাতে সব রাউট req.body পায়।
